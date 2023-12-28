@@ -62,19 +62,16 @@ export class FilesHandler {
 		return "";
 	}
 
-
-
 	async moveCachedNoteAttachments(oldNotePath: string, newNotePath: string,
 		deleteExistFiles: boolean, attachmentsSubfolder: string): Promise<MovedAttachmentResult> {
 
 		if (this.isPathIgnored(oldNotePath) || this.isPathIgnored(newNotePath))
 			return;
 
-		//try to get embeds for old or new path (metadataCache can be updated or not)		
+		//try to get embeds for old or new path (metadataCache can be updated or not)
 		//!!! this can return undefined if note was just updated
-		let embeds = this.app.metadataCache.getCache(newNotePath)?.embeds;
-		if (!embeds)
-			embeds = this.app.metadataCache.getCache(oldNotePath)?.embeds;
+
+		let embeds = (await Utils.getCacheSafe(newNotePath)).embeds;
 
 		if (!embeds)
 			return;
@@ -105,18 +102,10 @@ export class FilesHandler {
 			if (path.dirname(oldNotePath) != "." && !path.dirname(oldLinkPath).startsWith(path.dirname(oldNotePath)))
 				continue;
 
-			let newLinkPath = this.lh.getFullPathForLink(link, newNotePath);
+			let newLinkPath = this.getNewAttachmentPath(file.path, newNotePath, attachmentsSubfolder);
 
-			if (attachmentsSubfolder.contains("${filename}")) {
-				let oldLinkPathBySetting = this.getNewAttachmentPath(file.path, oldNotePath, attachmentsSubfolder);
-				if (oldLinkPath == oldLinkPathBySetting) {
-					newLinkPath = this.getNewAttachmentPath(file.path, newNotePath, attachmentsSubfolder);
-				}
-			}
-
-			if (newLinkPath == file.path)
-				continue; //nothing to change
-
+			if (newLinkPath == file.path) //nothing to move
+				continue;
 
 			let res = await this.moveAttachment(file, newLinkPath, [oldNotePath, newNotePath], deleteExistFiles);
 			result.movedAttachments = result.movedAttachments.concat(res.movedAttachments);
@@ -146,69 +135,49 @@ export class FilesHandler {
 			renamedFiles: []
 		};
 
-		//!!! this can return undefined if note was just updated
-		let embeds = this.app.metadataCache.getCache(notePath)?.embeds;
-		if (embeds) {
-			for (let embed of embeds) {
-				let link = embed.link;
+		const cache = await Utils.getCacheSafe(notePath);
 
-				let fillPathLink = this.lh.getFullPathForLink(link, notePath);
-				if (result.movedAttachments.findIndex(x => x.oldPath == fillPathLink) != -1)
-					continue;//already moved	
+		const linkObjs = [...(cache.embeds ?? []), ...(cache.links ?? [])];
 
-				let file = this.lh.getFileByLink(link, notePath)
-				if (!file) {
-					console.error(this.consoleLogPrefix + notePath + " has bad embed (file does not exist): " + link);
-					continue;
-				}
+		for (let linkObj of linkObjs) {
+			let link = this.lh.splitLinkToPathAndSection(linkObj.link).link;
 
-				
-
-				let newPath = this.getNewAttachmentPath(file.path, notePath, subfolderName);
-
-
-				if (newPath == file.path)//nothing to move
-					continue;
-
-				let res = await this.moveAttachment(file, newPath, [notePath], deleteExistFiles);
-
-				result.movedAttachments = result.movedAttachments.concat(res.movedAttachments);
-				result.renamedFiles = result.renamedFiles.concat(res.renamedFiles);
+			if (link.startsWith("#")) {
+				// internal section link
+				continue;
 			}
-		}
 
-		//!!! this can return undefined if note was just updated
-		let links = this.app.metadataCache.getCache(notePath)?.links;
-		if (links) {
-			for (let l of links) {
-				let link = this.lh.splitLinkToPathAndSection(l.link).link;
-
-				if (link.startsWith("#")) //internal section link
-					continue;
-
-				if (link.endsWith(".md"))
-					continue;
-
-				let fillPathLink = this.lh.getFullPathForLink(link, notePath);
-				if (result.movedAttachments.findIndex(x => x.oldPath == fillPathLink) != -1)
-					continue;//already moved	
-
-				let file = this.lh.getFileByLink(link, notePath)
-				if (!file) {
-					console.error(this.consoleLogPrefix + notePath + " has bad link (file does not exist): " + link);
-					continue;
-				}
-
-				let newPath = this.getNewAttachmentPath(file.path, notePath, subfolderName);
-
-				if (newPath == file.path)//nothing to move
-					continue;
-
-				let res = await this.moveAttachment(file, newPath, [notePath], deleteExistFiles);
-
-				result.movedAttachments = result.movedAttachments.concat(res.movedAttachments);
-				result.renamedFiles = result.renamedFiles.concat(res.renamedFiles);
+			let fullPathLink = this.lh.getFullPathForLink(link, notePath);
+			if (result.movedAttachments.findIndex(x => x.oldPath == fullPathLink) != -1) {
+				// already moved
+				continue;
 			}
+
+			let file = this.lh.getFileByLink(link, notePath)
+			if (!file) {
+				const type = linkObj.original.startsWith("!") ? "embed" : "link";
+				console.error(`${this.consoleLogPrefix}${notePath} has bad ${type} (file does not exist): ${link}`);
+				continue;
+			}
+
+			const extension = file.extension.toLowerCase();
+
+			if (extension === "md" || file.extension === "canvas") {
+				// internal file link
+				continue;
+			}
+
+			let newPath = this.getNewAttachmentPath(file.path, notePath, subfolderName);
+
+			if (newPath == file.path) {
+				// nothing to move
+				continue;
+			}
+
+			let res = await this.moveAttachment(file, newPath, [notePath], deleteExistFiles);
+
+			result.movedAttachments = result.movedAttachments.concat(res.movedAttachments);
+			result.renamedFiles = result.renamedFiles.concat(res.renamedFiles);
 		}
 
 		return result;
@@ -234,7 +203,7 @@ export class FilesHandler {
 
 		await this.createFolderForAttachmentFromPath(newLinkPath);
 
-		let linkedNotes = this.lh.getCachedNotesThatHaveLinkToFile(path);
+		let linkedNotes = await this.lh.getCachedNotesThatHaveLinkToFile(path);
 		if (parentNotePaths) {
 			for (let notePath of parentNotePaths) {
 				linkedNotes.remove(notePath);
@@ -325,13 +294,13 @@ export class FilesHandler {
 			return;
 
 		//!!! this can return undefined if note was just updated
-		let embeds = this.app.metadataCache.getCache(notePath)?.embeds;
+		let embeds = (await Utils.getCacheSafe(notePath)).embeds;
 		if (embeds) {
 			for (let embed of embeds) {
 				let link = embed.link;
 
 				let fullPath = this.lh.getFullPathForLink(link, notePath);
-				let linkedNotes = this.lh.getCachedNotesThatHaveLinkToFile(fullPath);
+				let linkedNotes = await this.lh.getCachedNotesThatHaveLinkToFile(fullPath);
 				if (linkedNotes.length == 0) {
 					let file = this.lh.getFileByLink(link, notePath, false);
 					if (file) {

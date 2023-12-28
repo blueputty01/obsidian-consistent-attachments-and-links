@@ -481,12 +481,12 @@ export default class ConsistentAttachmentsAndLinks extends Plugin {
     this.fh.deleteEmptyFolders('/');
   }
 
-  async checkConsistency() {
-    let badLinks = this.lh.getAllBadLinks();
-    let badSectionLinks = await this.lh.getAllBadSectionLinks();
-    let badEmbeds = this.lh.getAllBadEmbeds();
-    let wikiLinks = this.lh.getAllWikiLinks();
-    let wikiEmbeds = this.lh.getAllWikiEmbeds();
+	async checkConsistency() {
+		let badLinks = await this.lh.getAllBadLinks();
+		let badSectionLinks = await this.lh.getAllBadSectionLinks();
+		let badEmbeds = await this.lh.getAllBadEmbeds();
+		let wikiLinks = await this.lh.getAllWikiLinks();
+		let wikiEmbeds = await this.lh.getAllWikiEmbeds();
 
     let text = '';
 
